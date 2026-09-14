@@ -1,35 +1,13 @@
-# TBH-BugBounty - Hunter Toolkit
+# TBH-BugBounty v2.0 Pro - JSON + HTML
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Bug%20Bounty-Hunter-red?style=for-the-badge">
-  <img src="https://img.shields.io/badge/Scope-Only%20Authorized-orange?style=for-the-badge">
-  <img src="https://img.shields.io/badge/TBH-Tulungagung%20Black%20Hat-black?style=for-the-badge">
-</p>
+<p align="center"><img src="https://img.shields.io/badge/Version-v2.0%20Pro-red?style=for-the-badge"><img src="https://img.shields.io/badge/Pro-HTML%20%7C%20JSON-green?style=for-the-badge"></p>
 
-> **Hanya untuk scope yang diizinkan** di HackerOne/Bugcrowd. Jangan scan target tanpa izin.
+> **Pro** - Export HTML siap submit ke HackerOne.
 
-## ✨ Features
-- 🔍 **Header Misconfig** → auto saran laporan Low
-- 🔐 **SSL Expire Check** → saran Medium jika <30 hari
-- 🚪 **Port Quick** 80,443,8080,8443
-- 🌐 **Subdomain** www,api,admin,test
-- 📄 **JSON Export** siap lampiran HackerOne
-
-## 🚀 Usage
+## 🚀 Pro Usage
 ```bash
-git clone https://github.com/TulungagungBlackHat/TBH-BugBounty
-cd TBH-BugBounty
-python3 bugbounty.py -u https://example.com --json report.json
-cat report.json
+python3 bugbounty.py -u https://example.com --json report.json --html report.html
+# Buka report.html di browser, screenshot untuk laporan
 ```
 
-## 📝 Cara Lapor
-1. Pillih missing header → buat title `Missing CSP`
-2. Sertakan PoC dari `report.json`
-3. Jelaskan dampak & fix
-
 ## 👥 TBH
-uchil404 - Tulungagung Black Hat - Always Smile :)
-
-## 📄 License
-MIT - Edukasi
