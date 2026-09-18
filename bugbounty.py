@@ -10,7 +10,7 @@ BANNER = """\033[91m╔═══════════════════
 \033[91m╚════════════════════════════════════╝\033[0m"""
 
 def recon(url):
-    domain=urlparse(url if url.startswith("http") else "https://"+url).netloc
+    domain=urlparse(url if url.startswith("http") else "https://"+url).hostname or urlparse(url if url.startswith("http") else "https://"+url).netloc
     ip=socket.gethostbyname(domain)
     print(f"[*] Target: {domain} ({ip})")
     report={"target":domain,"ip":ip,"url":url,"time":str(datetime.now())}
