@@ -1,70 +1,161 @@
 #!/usr/bin/env python3
-# TBH-BugBounty v2.0 Pro - JSON + HTML Report for HackerOne
-import socket, requests, argparse, json, ssl
-from datetime import datetime
+"""TBH-BugBounty v3 - First-pass hunter recon with report-ready output (authorized testing only)."""
+import argparse, json, os, socket, ssl, sys
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-BANNER = """\033[91m╔════════════════════════════════════╗
-\033[91m║ \033[97mTBH-BugBounty v2.0 Pro \033[91m- HTML/JSON \033[91m║
-\033[91m║ \033[90mTulungagung Black Hat | uchil404 \033[91m║
-\033[91m╚════════════════════════════════════╝\033[0m"""
+try:
+    import requests
+except ImportError:
+    print("[!] requests required: pip install requests", file=sys.stderr)
+    sys.exit(2)
 
-def recon(url):
-    domain=urlparse(url if url.startswith("http") else "https://"+url).hostname or urlparse(url if url.startswith("http") else "https://"+url).netloc
-    ip=socket.gethostbyname(domain)
-    print(f"[*] Target: {domain} ({ip})")
-    report={"target":domain,"ip":ip,"url":url,"time":str(datetime.now())}
+VERSION = "3.0"
+REPO = "https://github.com/TulungagungBlackHat/TBH-BugBounty"
+
+def banner():
+    if os.environ.get("NO_COLOR"):
+        return ""
+    return ("\033[91m╔════════════════════════════════════╗\n"
+            "║ \033[97mTBH-BugBounty v3\033[91m - Report Ready    \033[91m║\n"
+            "║ \033[90mTulungagung Black Hat | uchil404 \033[91m║\n"
+            "╚════════════════════════════════════╝\033[0m")
+
+def color(code, text, enabled=True):
+    return f"\033[{code}m{text}\033[0m" if enabled else text
+
+def build_session(args):
+    s = requests.Session()
+    s.headers["User-Agent"] = f"TBH-BugBounty/{VERSION} (+{REPO})"
+    if args.cookie:
+        s.headers["Cookie"] = args.cookie
+    for h in args.header or []:
+        name, _, val = h.partition(":")
+        if val:
+            s.headers[name.strip()] = val.strip()
+    if args.proxy:
+        s.proxies = {"http": args.proxy, "https": args.proxy}
+    return s
+
+def recon(url, args):
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    domain = parsed.hostname or parsed.netloc
     try:
-        r=requests.get(url,timeout=5,headers={'User-Agent':'TBH-BugBounty/2.0'})
-        missing=[h for h in ['Content-Security-Policy','Strict-Transport-Security','X-Frame-Options'] if h not in r.headers]
-        report["headers"]={"status":r.status_code,"server":r.headers.get('Server','Unknown'),"missing":missing}
-        print(f"[+] Headers: {r.status_code} | Missing: {missing or 'none'}")
-    except Exception as e: report["headers"]={"error":str(e)}
+        ip = socket.gethostbyname(domain)
+    except socket.gaierror:
+        return None, domain, None
+    print(color("96", f"[*] Target: {domain} ({ip})", True))
+    session = build_session(args)
+    report = {"tool": "TBH-BugBounty", "version": VERSION, "target": domain, "ip": ip,
+              "url": url, "time": str(datetime.now(timezone.utc)), "findings": []}
+
     try:
-        ctx=ssl.create_default_context()
-        with ctx.wrap_socket(socket.socket(),server_hostname=domain) as s:
-            s.settimeout(3); s.connect((domain,443)); cert=s.getpeercert()
-            expire=cert.get('notAfter'); days=(datetime.strptime(expire,"%b %d %H:%M:%S %Y %Z")-datetime.utcnow()).days
-            report["ssl"]={"expire":expire,"days":days}
-            print(f"[+] SSL: {days} days")
-    except: report["ssl"]={"note":"no https"}
-    open_ports=[]
-    for p in [80,443,8080,8443]:
-        s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.settimeout(1)
-        if s.connect_ex((ip,p))==0: open_ports.append(p); print(f"[OPEN] {p}")
+        r = session.get(url, timeout=args.timeout)
+        important = ["Content-Security-Policy", "Strict-Transport-Security", "X-Frame-Options",
+                     "X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy"]
+        missing = [h for h in important if h not in r.headers]
+        report["headers"] = {"status": r.status_code, "server": r.headers.get("Server", ""),
+                             "missing": missing, "powered_by": r.headers.get("X-Powered-By", "")}
+        for h in missing:
+            report["findings"].append({"severity": "Low", "title": f"Missing {h}",
+                                       "detail": f"HTTP {r.status_code}", "fix": f"Set {h} header"})
+        print(color("96", f"[+] Headers: {r.status_code} | Missing: {', '.join(missing) or 'none'}", True))
+        if r.headers.get("X-Powered-By"):
+            report["findings"].append({"severity": "Info", "title": "Technology disclosed",
+                                       "detail": r.headers["X-Powered-By"], "fix": "Suppress X-Powered-By"})
+    except requests.RequestException as e:
+        report["headers"] = {"error": str(e)}
+        print(color("90", f"[-] Headers: {e}", True))
+
+    try:
+        ctx = ssl.create_default_context()
+        with ctx.wrap_socket(socket.socket(), server_hostname=domain) as s:
+            s.settimeout(args.timeout)
+            s.connect((domain, 443))
+            cert = s.getpeercert()
+        expire = cert["notAfter"]
+        days = (datetime.strptime(expire, "%b %d %H:%M:%S %Y %Z")
+                .replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).days
+        report["ssl"] = {"expire": expire, "days": days}
+        print(color("96", f"[+] SSL: {days} days until expiry", True))
+        if days < 30:
+            report["findings"].append({"severity": "Medium", "title": f"SSL cert expires in {days} days",
+                                       "detail": expire, "fix": "Renew certificate"})
+    except Exception as e:
+        report["ssl"] = {"note": f"no usable https: {e}"}
+
+    open_ports = []
+    for p in [80, 443, 8080, 8443]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(args.timeout if args.timeout <= 2 else 1.0)
+        if s.connect_ex((ip, p)) == 0:
+            open_ports.append(p)
+            print(color("96", f"[OPEN] {p}", True))
         s.close()
-    report["ports"]=open_ports
-    found=[]
-    for sub in ['www','api','admin','test']:
-        try: socket.gethostbyname(f"{sub}.{domain}"); found.append(f"{sub}.{domain}")
-        except: pass
-    report["subdomains"]=found
-    return report
+    report["ports"] = open_ports
+
+    subs = []
+    for sub in ["www", "api", "admin", "test", "dev"]:
+        try:
+            sip = socket.gethostbyname(f"{sub}.{domain}")
+            subs.append({"host": f"{sub}.{domain}", "ip": sip})
+        except socket.gaierror:
+            pass
+    report["subdomains"] = [s["host"] for s in subs]
+    return report, domain, ip
 
 def main():
-    print(BANNER)
-    print("\033[91m[!] Hanya untuk scope yang diizinkan!\033[0m\n")
-    parser=argparse.ArgumentParser(description="v2.0 Pro")
-    parser.add_argument("-u","--url",required=True)
-    parser.add_argument("--json",help="Save JSON")
-    parser.add_argument("--html",help="Save HTML report")
-    args=parser.parse_args()
-    report=recon(args.url)
-    print("\n--- Saran Laporan ---")
-    if report["headers"].get("missing"): print(f"- Missing {report['headers']['missing']} (Low)")
-    if report["ssl"].get("days",999)<30: print(f"- SSL {report['ssl']['days']} days (Medium)")
-    if args.json:
-        open(args.json,'w').write(json.dumps(report,indent=2)); print(f"[✓] JSON: {args.json}")
-    if args.html:
-        html=f"""<html><head><title>TBH-BugBounty Pro Report {report['target']}</title></head><body style="font-family:monospace;background:#0d1117;color:#c9d1d9;padding:20px">
-<h1 style="color:#ff0000">TBH-BugBounty Pro Report - {report['target']} ({report['ip']})</h1>
-<p>Time: {report['time']}</p>
-<h2>Headers</h2><pre>{json.dumps(report['headers'],indent=2)}</pre>
-<h2>SSL</h2><pre>{json.dumps(report['ssl'],indent=2)}</pre>
-<h2>Ports</h2><pre>{report['ports']}</pre>
-<h2>Subdomains</h2><pre>{report['subdomains']}</pre>
-<p>Generated by TBH-BugBounty v2.0 Pro - Tulungagung Black Hat</p>
-</body></html>"""
-        open(args.html,'w').write(html); print(f"[✓] HTML: {args.html}")
+    parser = argparse.ArgumentParser(description=f"TBH-BugBounty v{VERSION}")
+    parser.add_argument("-u", "--url", required=True)
+    parser.add_argument("--proxy", help="e.g. http://127.0.0.1:8080")
+    parser.add_argument("--cookie", help="Cookie header value")
+    parser.add_argument("-H", "--header", action="append", help="extra header, repeatable")
+    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--json", help="save JSON")
+    parser.add_argument("--html", help="save HTML report")
+    parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--version", action="version", version=f"TBH-BugBounty {VERSION}")
+    args = parser.parse_args()
+    print(banner())
 
-if __name__=="__main__": main()
+    use_color = not args.no_color and not os.environ.get("NO_COLOR")
+    print(color("91", "[!] Authorized targets only.", use_color))
+    report, domain, ip = recon(args.url, args)
+    if report is None:
+        print(color("91", f"[!] cannot resolve {domain}", use_color), file=sys.stderr)
+        sys.exit(2)
+
+    print("\n--- Report suggestions ---")
+    if not report["findings"]:
+        print("(no automated findings - manual testing time)")
+    for f in report["findings"]:
+        print(f"- [{f['severity']}] {f['title']}: {f['fix']}")
+
+    if args.json:
+        try:
+            with open(args.json, "w") as fh:
+                json.dump(report, fh, indent=2)
+            print(f"[✓] JSON: {args.json}")
+        except OSError as e:
+            print(color("91", f"[!] cannot write JSON: {e}", use_color), file=sys.stderr)
+            sys.exit(2)
+    if args.html:
+        html = f"""<html><head><title>TBH-BugBounty {report['target']}</title></head>
+<body style="font-family:monospace;background:#0d1117;color:#c9d1d9;padding:20px">
+<h1 style="color:#ff0000">TBH-BugBounty v{VERSION} Report - {report['target']} ({report['ip']})</h1>
+<p>Time: {report['time']}</p>
+<h2>Findings</h2><pre>{json.dumps(report['findings'], indent=2)}</pre>
+<h2>Raw</h2><pre>{json.dumps({k: report[k] for k in ('headers', 'ssl', 'ports', 'subdomains')}, indent=2)}</pre>
+<p>Generated by TBH-BugBounty v{VERSION} - Tulungagung Black Hat</p></body></html>"""
+        try:
+            with open(args.html, "w") as fh:
+                fh.write(html)
+            print(f"[✓] HTML: {args.html}")
+        except OSError as e:
+            print(color("91", f"[!] cannot write HTML: {e}", use_color), file=sys.stderr)
+            sys.exit(2)
+
+    sys.exit(1 if any(f["severity"] in ("High", "Medium") for f in report["findings"]) else 0)
+
+if __name__ == "__main__":
+    main()
